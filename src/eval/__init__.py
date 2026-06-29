@@ -8,9 +8,11 @@ from .metrics import (
     event_overlap,
     score,
 )
+from .reliability import assess_reliability, load_calibrator
 
 __all__ = [
     "compute_text_metrics", "event_overlap", "score", "benchmark_metrics",
     "event_diff", "hallucination_stats",
     "Calibrator", "expected_calibration_error", "reliability_bins",
+    "assess_reliability", "load_calibrator",
 ]

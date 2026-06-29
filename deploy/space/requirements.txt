@@ -1,0 +1,16 @@
+# Hugging Face Space (CPU) dependencies. The src/ tree is vendored, so no
+# install-from-git is needed; just the runtime deps.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
+torchvision>=0.17
+
+transformers>=4.46        # AutoModelForImageTextToText
+peft>=0.12
+accelerate>=0.33
+sentencepiece>=0.2
+einops>=0.8
+pillow>=10.3
+numpy>=1.26
+scikit-learn>=1.5
+pyyaml>=6.0
+gradio>=4.40

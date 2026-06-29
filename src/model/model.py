@@ -100,19 +100,24 @@ def load_for_inference(cfg, adapter_path: str, device: str | None = None):
     return model, processor
 
 
-def load_for_demo(cfg, adapter_path: str, device: str = "cpu", quantize: bool = True):
-    """Deployment loader: merge the adapter and (on CPU) int8-quantize for speed.
+def load_for_demo(cfg, adapter_path: str | None = None, device: str = "cpu", quantize: bool = True):
+    """Deployment loader: (optional) merge the adapter and (on CPU) int8-quantize.
 
-    Merging folds LoRA into the base weights (a plain model, no PEFT overhead);
-    dynamic int8 quantization of the Linear layers shrinks RAM ~4x and speeds up
-    CPU inference. NOTE: a quantized model cannot backprop, so Grad-CAM grounding
-    is unavailable when quantize=True (generation + confidence still work).
+    With an adapter, merging folds LoRA into the base weights (a plain model, no
+    PEFT overhead); with `adapter_path=None` the base VLM is loaded (e.g. before a
+    fine-tune exists). Dynamic int8 quantization of the Linear layers shrinks RAM
+    ~4x and speeds up CPU inference. NOTE: a quantized model cannot backprop, so
+    Grad-CAM grounding is unavailable when quantize=True (generation + confidence
+    still work).
     """
     import torch
 
-    model, processor = load_for_inference(cfg, adapter_path, device=device)
-    if hasattr(model, "merge_and_unload"):
-        model = model.merge_and_unload()
+    if adapter_path:
+        model, processor = load_for_inference(cfg, adapter_path, device=device)
+        if hasattr(model, "merge_and_unload"):
+            model = model.merge_and_unload()
+    else:
+        model, processor = load_base(cfg, device=device)
     model.eval()
     if quantize and device == "cpu":
         engines = getattr(torch.backends.quantized, "supported_engines", [])

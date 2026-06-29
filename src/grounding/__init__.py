@@ -8,6 +8,10 @@ is actually grounded in the image (a sanity-check against hallucination).
 BLIP-2 path: ViT patches -> Q-Former -> language_projection -> OPT. Gradient of
 the OPT loss flows all the way back to the ViT patches even though the backbone
 is frozen (we enable grad on pixel_values so the graph is built).
+
+Security-camera frames are wide, so pass `letterbox_input=True` to pad them to
+square (matching how the model is fed) before computing/overlaying the heatmap —
+otherwise a 16:9 frame is squished and the heat lands in the wrong place.
 """
 
 from __future__ import annotations
@@ -17,6 +21,8 @@ import re
 import numpy as np
 import torch
 from PIL import Image
+
+from data.preprocess import letterbox
 
 
 def _unwrap(model):
@@ -33,8 +39,11 @@ def split_sentences(text: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
-def grounding_cam(model, processor, image: Image.Image, text: str, device: str) -> np.ndarray:
+def grounding_cam(model, processor, image: Image.Image, text: str, device: str,
+                  letterbox_input: bool = False) -> np.ndarray:
     """Grad-CAM over ViT patches for `text`. Returns an (S, S) map in [0, 1]."""
+    if letterbox_input:
+        image = letterbox(image)
     vision = _unwrap(model).vision_model
     captured: dict[str, torch.Tensor] = {}
 
@@ -69,10 +78,12 @@ def grounding_cam(model, processor, image: Image.Image, text: str, device: str) 
 
 
 def overlay_heatmap(image: Image.Image, cam: np.ndarray, size: int = 224,
-                    alpha: float = 0.5) -> Image.Image:
+                    alpha: float = 0.5, letterbox_input: bool = False) -> Image.Image:
     """Blend a CAM (small grid) over the image as a jet heatmap."""
     import matplotlib
 
+    if letterbox_input:
+        image = letterbox(image)
     base = image.convert("RGB").resize((size, size))
     cam_img = Image.fromarray((cam * 255).astype("uint8")).resize((size, size), Image.BILINEAR)
     cam_arr = np.asarray(cam_img, dtype=np.float32) / 255.0
@@ -81,10 +92,11 @@ def overlay_heatmap(image: Image.Image, cam: np.ndarray, size: int = 224,
     return Image.fromarray((np.clip(blended, 0, 1) * 255).astype("uint8"))
 
 
-def ground_report(model, processor, image: Image.Image, report: str, device: str):
+def ground_report(model, processor, image: Image.Image, report: str, device: str,
+                  letterbox_input: bool = False):
     """Per-sentence grounding. Returns list of (sentence, overlay_image)."""
     out = []
     for sent in split_sentences(report):
-        cam = grounding_cam(model, processor, image, sent, device)
-        out.append((sent, overlay_heatmap(image, cam)))
+        cam = grounding_cam(model, processor, image, sent, device, letterbox_input=letterbox_input)
+        out.append((sent, overlay_heatmap(image, cam, letterbox_input=letterbox_input)))
     return out
