@@ -1,0 +1,39 @@
+# SENTRY — core dependencies (Python 3.12).
+# After install, run `pip freeze > requirements.lock.txt` for an exact env.
+
+# --- Deep learning core ---
+torch>=2.2
+torchvision>=0.17
+
+# --- Hugging Face stack ---
+transformers>=4.46        # AutoModelForImageTextToText
+peft>=0.12                # LoRA adapters
+accelerate>=0.33
+datasets>=2.20
+sentencepiece>=0.2
+einops>=0.8
+
+# --- Experiment tracking ---
+wandb>=0.17
+
+# --- Data / utils ---
+pillow>=10.3
+numpy>=1.26
+scikit-learn>=1.5         # isotonic calibrator
+pyyaml>=6.0
+tqdm>=4.66
+
+# --- NLG metrics (BLEU / ROUGE / METEOR) ---
+sacrebleu>=2.4
+rouge-score>=0.1.2
+nltk>=3.9
+
+# --- Visualization / demo ---
+matplotlib>=3.8           # colormaps for Grad-CAM grounding overlays
+gradio>=4.40              # upload image -> incident report demo
+
+# --- Dev / testing ---
+pytest>=8.0
+
+# --- CUDA-ONLY (uncomment on an NVIDIA GPU host) ---
+# bitsandbytes>=0.43       # 8-bit/4-bit QLoRA — requires CUDA

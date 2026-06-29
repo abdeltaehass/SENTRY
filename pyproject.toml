@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentry"
+version = "0.0.1"
+description = "SENTRY — a vision-language model that turns surveillance imagery into structured incident reports."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+authors = [{ name = "abdeltaeha" }]
+license = { text = "MIT" }
+
+# Runtime deps are tracked in requirements.txt. Run modules with PYTHONPATH=src.
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

@@ -1,0 +1,44 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- Virtual env ---
+.venv/
+venv/
+env/
+
+# --- Data (large; provided by your ingestion pipeline) ---
+data/raw/
+data/processed/
+data/interim/
+*.tgz
+*.tar.gz
+*.zip
+
+# --- Model weights / checkpoints ---
+checkpoints/
+outputs/
+runs/
+*.ckpt
+*.pt
+*.safetensors
+adapters/
+
+# --- Experiment tracking ---
+wandb/
+
+# --- Secrets / env ---
+.env
+*.key
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
