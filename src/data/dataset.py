@@ -127,7 +127,8 @@ def build_dataloader(
 ) -> DataLoader:
     dataset = IncidentReportDataset(jsonl_path, text_field=text_field,
                                     letterbox_input=letterbox_input)
-    collator = ReportCollator(processor=processor, max_target_tokens=max_target_tokens, prompt=prompt)
+    collator = ReportCollator(processor=processor,
+                              max_target_tokens=max_target_tokens, prompt=prompt)
     return DataLoader(
         dataset,
         batch_size=batch_size,

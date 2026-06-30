@@ -1,0 +1,56 @@
+{
+  "source": "UCF-Crime",
+  "generated_utc": "2026-06-29T23:48:07+00:00",
+  "n_records": 20,
+  "n_anomalous": 15,
+  "n_normal": 5,
+  "n_camera_ids": 20,
+  "by_split": {
+    "test": 6,
+    "train": 13,
+    "val": 1
+  },
+  "by_category": {
+    "Abuse": 2,
+    "Arrest": 1,
+    "Arson": 1,
+    "Assault": 1,
+    "Burglary": 1,
+    "Explosion": 1,
+    "Fighting": 2,
+    "Normal": 5,
+    "RoadAccidents": 1,
+    "Robbery": 1,
+    "Shooting": 1,
+    "Shoplifting": 1,
+    "Stealing": 1,
+    "Vandalism": 1
+  },
+  "by_event": {
+    "fire/smoke": 2,
+    "intrusion": 1,
+    "theft": 4,
+    "vandalism": 1,
+    "vehicle": 1,
+    "violence": 7,
+    "weapon": 1
+  },
+  "fields": [
+    "anomaly_windows_frames",
+    "anomaly_windows_seconds",
+    "camera_id",
+    "category",
+    "events",
+    "fps",
+    "frame_dir",
+    "id",
+    "is_anomalous",
+    "location_id",
+    "official_split",
+    "report",
+    "source",
+    "split",
+    "video_id",
+    "video_path"
+  ]
+}

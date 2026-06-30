@@ -34,8 +34,10 @@ import random
 import re
 from collections import defaultdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from PIL import Image
+if TYPE_CHECKING:  # Pillow is only needed for image ops, not for text/annotation parsing.
+    from PIL import Image
 
 # --- image aspect handling --------------------------------------------------
 
@@ -46,6 +48,8 @@ def letterbox(image: Image.Image, size: int | None = None, fill=(0, 0, 0)) -> Im
     Security footage is wide; squishing it to the model's square input distorts
     geometry. Letterboxing pads the short side instead.
     """
+    from PIL import Image
+
     image = image.convert("RGB")
     w, h = image.size
     side = max(w, h)
@@ -176,7 +180,8 @@ def assert_no_leakage(splits: dict[str, list[dict]], group_key: str = "camera_id
     for a in ("train", "val", "test"):
         for b in ("train", "val", "test"):
             if a < b and (sets[a] & sets[b]):
-                raise AssertionError(f"{group_key} leakage {a}/{b}: {sorted(sets[a] & sets[b])[:5]}")
+                shared = sorted(sets[a] & sets[b])[:5]
+                raise AssertionError(f"{group_key} leakage {a}/{b}: {shared}")
 
 
 def write_jsonl(records: list[dict], path: str | Path) -> None:
@@ -189,10 +194,12 @@ def write_jsonl(records: list[dict], path: str | Path) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Preprocess a surveillance dataset into JSONL splits")
-    p.add_argument("--annotations", required=True, help="raw annotations JSON (see module docstring)")
+    p.add_argument("--annotations", required=True,
+                   help="raw annotations JSON (see module docstring)")
     p.add_argument("--base-dir", default=".", help="root for resolving image/video paths")
     p.add_argument("--out-dir", default="data/processed/incidents")
-    p.add_argument("--group-key", default="camera_id", help="split by this id (camera_id|location_id)")
+    p.add_argument("--group-key", default="camera_id",
+                   help="split by this id (camera_id|location_id)")
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 
@@ -205,10 +212,12 @@ def main() -> None:
         write_jsonl(recs, out / f"{name}.jsonl")
 
     n_groups = len({str(r.get(args.group_key)) for r in records})
-    print(f"=== SENTRY preprocessing ===  kept {len(records)} records / {n_groups} {args.group_key}s")
+    print(f"=== SENTRY preprocessing ===  "
+          f"kept {len(records)} records / {n_groups} {args.group_key}s")
     for name, recs in splits.items():
         g = len({str(r.get(args.group_key)) for r in recs})
-        print(f"  {name:5s}: {len(recs):5d} records / {g:3d} {args.group_key}s -> {out / f'{name}.jsonl'}")
+        out_path = out / f"{name}.jsonl"
+        print(f"  {name:5s}: {len(recs):5d} records / {g:3d} {args.group_key}s -> {out_path}")
     print(f"no {args.group_key} leakage across splits ✓")
 
 
