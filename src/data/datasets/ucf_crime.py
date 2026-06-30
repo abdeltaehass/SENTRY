@@ -327,6 +327,62 @@ def expand_to_frames(
     return frame_records
 
 
+def expand_to_clips(
+    records: list[dict], *, frames_per_clip: int = 5, write_images: bool = True,
+) -> list[dict]:
+    """Sample a short ordered clip of frames per video for temporal training/eval.
+
+    Unlike ``expand_to_frames`` (one record per frame), this emits one record per
+    clip carrying ``image_paths`` — an ordered list of ``frames_per_clip`` frames
+    that span the event. For anomaly clips with temporal windows, frames are drawn
+    from just before the first segment through just after the last, so the report's
+    sequence of events is actually visible across the clip; normal clips are
+    sampled uniformly. Decodes frames with OpenCV when ``write_images=True``, else
+    emits the expected frame paths without decoding (manifest dry-runs).
+    """
+    clip_records: list[dict] = []
+    for rec in records:
+        indices = _clip_frame_indices(rec, frames_per_clip)
+        if write_images:
+            saved = _grab_frames(rec["video_path"], rec["frame_dir"], indices)
+        else:
+            stem = Path(rec["video_id"]).name
+            saved = {idx: str(Path(rec["frame_dir"]) / f"{stem}_f{idx:06d}.jpg")
+                     for idx in indices}
+        paths = [saved[i] for i in indices if i in saved]
+        if not paths:
+            continue
+        clip_records.append({
+            "id": f"{rec['id']}_clip",
+            "video_id": rec["video_id"],
+            "image_path": paths[0],          # primary frame (single-frame back-compat)
+            "image_paths": paths,            # ordered clip the temporal model consumes
+            "frame_indices": [i for i in indices if i in saved],
+            "report": rec["report"],
+            "events": rec["events"],
+            "is_anomalous": rec["is_anomalous"],
+            "category": rec["category"],
+            "source": "UCF-Crime",
+            "split": rec["split"],
+            "camera_id": rec["camera_id"],
+            "location_id": rec["location_id"],
+        })
+    return clip_records
+
+
+def _clip_frame_indices(rec: dict, n: int) -> list[int]:
+    """Ordered frame indices spanning a clip's event (anomaly window +/- ~1s)."""
+    windows = rec.get("anomaly_windows_frames") or []
+    if rec.get("is_anomalous") and windows:
+        start = max(0, min(w[0] for w in windows) - FPS)
+        end = max(w[1] for w in windows) + FPS
+    else:
+        start = 0
+        end = max((w[1] for w in windows), default=max(n, 1) * FPS)
+    idxs = _linspace(start, end, max(n, 1))
+    return sorted(dict.fromkeys(idxs))   # unique, ascending (temporal order)
+
+
 def _frame_plan(rec: dict, n_anom: int, n_context: int) -> list[tuple[int, bool]]:
     """Decide which frame indices to sample and whether each is anomalous."""
     windows = rec.get("anomaly_windows_frames") or []
@@ -407,9 +463,11 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--extract-frames", action="store_true",
                    help="also decode + sample frames into frame-level JSONL (needs OpenCV)")
+    p.add_argument("--extract-clips", action="store_true",
+                   help="also sample short multi-frame clips for temporal training (needs OpenCV)")
     p.add_argument("--frames-per-clip", type=int, default=8)
     p.add_argument("--no-write-images", action="store_true",
-                   help="with --extract-frames, plan frame paths without decoding video")
+                   help="with --extract-frames/--extract-clips, plan frame paths without decoding")
     args = p.parse_args()
 
     root = Path(args.data_root)
@@ -433,6 +491,16 @@ def main() -> None:
         fsummary = write_manifest(frames, frame_dir, source="UCF-Crime (frames)")
         print_summary(fsummary)
         print(f"  -> frame manifest: {frame_dir / 'manifest.csv'}")
+
+    if args.extract_clips:
+        clips = expand_to_clips(
+            records, frames_per_clip=args.frames_per_clip,
+            write_images=not args.no_write_images,
+        )
+        clip_dir = Path(args.out_dir) / "clips_manifest"
+        csummary = write_manifest(clips, clip_dir, source="UCF-Crime (clips)")
+        print_summary(csummary)
+        print(f"  -> clip manifest: {clip_dir / 'manifest.csv'}")
 
 
 if __name__ == "__main__":

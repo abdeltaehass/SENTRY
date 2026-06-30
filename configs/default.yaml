@@ -56,6 +56,15 @@ training:
   smoke_test: false
   smoke_subset: 32
 
+temporal:
+  # Multi-frame / temporal reasoning over a short clip (see model.temporal).
+  # When enabled, the demo/inference encode each frame, aggregate across the
+  # sequence, then generate one report describing the events over time.
+  enabled: false
+  num_frames: 4               # frames sampled per clip (3-5 works well)
+  aggregate: concat           # concat | mean | max | attn  (cross-frame aggregation)
+  prompt: "These are consecutive frames from a surveillance camera, in order. Describe the sequence of events over time — how the scene changes from the first frame to the last, and any anomalies or notable activity — in a concise factual report."
+
 eval:
   metrics: ["bleu", "rougeL", "meteor", "event_f1"]
   num_beams: 4

@@ -24,7 +24,7 @@ from pathlib import Path
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
-from .preprocess import letterbox
+from .preprocess import even_sample, letterbox
 
 
 class IncidentReportDataset(Dataset):
@@ -129,6 +129,97 @@ def build_dataloader(
                                     letterbox_input=letterbox_input)
     collator = ReportCollator(processor=processor,
                               max_target_tokens=max_target_tokens, prompt=prompt)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        collate_fn=collator,
+    )
+
+
+# --- multi-frame / temporal clips -------------------------------------------
+
+
+class ClipReportDataset(Dataset):
+    """Multi-frame variant: each record yields an ordered list of frames + report.
+
+    Reads the same JSONL contract, using a record's ``image_paths`` (a list of
+    frames, in temporal order) when present and falling back to the single
+    ``image_path`` otherwise. Up to ``num_frames`` frames are evenly sampled so a
+    long clip becomes a short, representative sequence the temporal model consumes
+    (see ``model.temporal``).
+    """
+
+    def __init__(self, jsonl_path: str | Path, text_field: str = "report",
+                 num_frames: int = 4, frames_field: str = "image_paths",
+                 letterbox_input: bool = True, image_size: int | None = None):
+        self.jsonl_path = Path(jsonl_path)
+        self.text_field = text_field
+        self.num_frames = num_frames
+        self.frames_field = frames_field
+        self.letterbox_input = letterbox_input
+        self.image_size = image_size
+        self.records = IncidentReportDataset._load(self.jsonl_path)
+
+    def _frame_paths(self, record: dict) -> list[str]:
+        paths = record.get(self.frames_field) or [record["image_path"]]
+        return even_sample(list(paths), self.num_frames)
+
+    def _frames(self, record: dict) -> list[Image.Image]:
+        images = [Image.open(p).convert("RGB") for p in self._frame_paths(record)]
+        if self.letterbox_input:
+            images = [letterbox(im, size=self.image_size) for im in images]
+        return images
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, idx: int) -> dict:
+        record = self.records[idx]
+        text = (record.get(self.text_field) or "").strip()
+        return {"frames": self._frames(record), "text": text, "raw": record}
+
+
+class ClipReportCollator:
+    """Collate clip records into per-clip frame lists + targets.
+
+    Temporal forwards build ``inputs_embeds`` per clip (a clip's visual-token
+    count depends on frame count and aggregation), so unlike the single-frame
+    collator this keeps clips as Python lists rather than one stacked tensor; the
+    temporal trainer encodes each clip in turn. With a processor it also returns
+    tokenized ``target_ids`` for the report text.
+    """
+
+    def __init__(self, processor=None, prompt: str = ""):
+        self.processor = processor
+        self.prompt = (prompt or "").strip()
+
+    def __call__(self, batch: list[dict]) -> dict:
+        clips = [b["frames"] for b in batch]
+        texts = [b["text"] for b in batch]
+        ids = [b["raw"].get("id") for b in batch]
+        out = {"clips": clips, "texts": texts, "ids": ids}
+        if self.processor is not None:
+            tok = self.processor.tokenizer
+            out["target_ids"] = [tok(t, add_special_tokens=False)["input_ids"] for t in texts]
+        return out
+
+
+def build_clip_dataloader(
+    jsonl_path: str | Path,
+    text_field: str = "report",
+    processor=None,
+    num_frames: int = 4,
+    batch_size: int = 1,
+    shuffle: bool = False,
+    num_workers: int = 0,
+    prompt: str = "",
+    letterbox_input: bool = True,
+) -> DataLoader:
+    dataset = ClipReportDataset(jsonl_path, text_field=text_field,
+                                num_frames=num_frames, letterbox_input=letterbox_input)
+    collator = ClipReportCollator(processor=processor, prompt=prompt)
     return DataLoader(
         dataset,
         batch_size=batch_size,

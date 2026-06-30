@@ -168,6 +168,40 @@ def test_expand_to_frames_labels_window_vs_context(ucf_root):
     assert all(f["events"] == [] and f["category"] == "Normal" for f in context)
 
 
+# --- clip expansion (multi-frame / temporal) --------------------------------
+
+def test_expand_to_clips_spans_event_in_order(ucf_root):
+    recs = ucf.build_records(
+        ucf_root, ucf_root / "Anomaly_Train.txt", ucf_root / "Anomaly_Test.txt",
+        ucf_root / "Temporal_Anomaly_Annotation_for_Testing_Videos.txt",
+        val_fraction=0.0,
+    )
+    abuse = next(r for r in recs if r["id"] == "Abuse028")     # window [165, 240]
+    clips = ucf.expand_to_clips([abuse], frames_per_clip=4, write_images=False)
+    assert len(clips) == 1
+    clip = clips[0]
+    # an ordered, multi-frame clip referencing several frames
+    assert len(clip["image_paths"]) == len(clip["frame_indices"]) >= 2
+    assert clip["frame_indices"] == sorted(clip["frame_indices"])          # temporal order
+    # frames span from ~1s before the window start through ~1s after its end
+    assert clip["frame_indices"][0] <= 165 and clip["frame_indices"][-1] >= 240
+    assert clip["image_path"] == clip["image_paths"][0]                    # primary = first frame
+    assert clip["report"] == abuse["report"] and clip["events"] == abuse["events"]
+
+
+def test_expand_to_clips_normal_uniform(ucf_root):
+    recs = ucf.build_records(
+        ucf_root, ucf_root / "Anomaly_Train.txt", ucf_root / "Anomaly_Test.txt",
+        ucf_root / "Temporal_Anomaly_Annotation_for_Testing_Videos.txt",
+        val_fraction=0.0,
+    )
+    normal = next(r for r in recs if not r["is_anomalous"])
+    clip = ucf.expand_to_clips([normal], frames_per_clip=5, write_images=False)[0]
+    assert clip["is_anomalous"] is False and clip["events"] == []
+    assert clip["frame_indices"][0] == 0                                   # uniform from start
+    assert clip["frame_indices"] == sorted(clip["frame_indices"])
+
+
 # --- manifest writer --------------------------------------------------------
 
 def test_write_manifest_artifacts(ucf_root, tmp_path):

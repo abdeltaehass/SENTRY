@@ -60,6 +60,27 @@ def letterbox(image: Image.Image, size: int | None = None, fill=(0, 0, 0)) -> Im
     return canvas
 
 
+# --- temporal sampling ------------------------------------------------------
+
+
+def even_sample(seq, k: int) -> list:
+    """Evenly sample ``k`` items from ``seq``, preserving order.
+
+    Used to pick a short, representative clip (e.g. 3-5 frames) from a longer run
+    of frames. Returns all items when there are ``k`` or fewer; the first item
+    when ``k == 1``; endpoints always included otherwise.
+    """
+    items = list(seq)
+    if k <= 0 or not items:
+        return []
+    if len(items) <= k:
+        return items
+    if k == 1:
+        return [items[0]]
+    step = (len(items) - 1) / (k - 1)
+    return [items[round(i * step)] for i in range(k)]
+
+
 # --- video frame extraction (scaffold; pluggable backend) -------------------
 
 

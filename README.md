@@ -11,7 +11,7 @@
 <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white">
 <img alt="Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20Transformers%20%C2%B7%20PEFT-FFD21E">
 <img alt="Gradio" src="https://img.shields.io/badge/Gradio-demo-F97316">
-<img alt="Tests" src="https://img.shields.io/badge/tests-35%20passing-2ea44f">
+<img alt="Tests" src="https://img.shields.io/badge/tests-50%20passing-2ea44f">
 <img alt="License" src="https://img.shields.io/badge/License-MIT-blue">
 </p>
 
@@ -29,11 +29,12 @@ A compact, end-to-end ML-engineering portfolio piece — not just a model, but t
 scaffolding that makes one trustworthy:
 
 - **Vision-language fine-tuning** — BLIP-2 adapted with **LoRA** (parameter-efficient, ~0.3% of weights trained).
+- **Temporal multi-frame reasoning** — reports the *events over a short clip* (3–5 frames), not just a single scene: each frame is encoded, the per-frame tokens are **aggregated across the sequence** (concat / mean / max / learnable attention), then one report is generated. *(See [Temporal reasoning](#temporal--multi-frame-reasoning).)*
 - **Real dataset integration** — a working dataloader + **cleaned annotation manifest** for **UCF-Crime** (1,900 real CCTV videos, 13 crime classes), with **data cards** documenting provenance and bias. *(See [Dataset](#dataset).)*
 - **Leakage-safe evaluation** — splits by **camera/clip**, never by frame, with an automated leakage check.
 - **Trustworthy outputs** — **calibration (ECE)** + a **reliability score** that flags low-confidence reports, and **Grad-CAM grounding** as a second check.
 - **Task-aware metrics** — beyond BLEU/ROUGE: an **event-overlap F1** and a **hallucination rate** that measure *facts*, not fluency.
-- **Engineering hygiene** — typed config, a pluggable ingestion pipeline, **35 passing tests**, `ruff`-clean data layer, and a one-click deployed demo.
+- **Engineering hygiene** — typed config, a pluggable ingestion pipeline, **50 passing tests**, `ruff`-clean data layer, and a one-click deployed demo.
 
 ## Problem
 
@@ -62,6 +63,55 @@ camera frame ─► ViT image encoder ─► Q-Former + projection ─► OPT-2.
   out of the loss so the two stay consistent.
 - **Wide-frame aware:** security footage (16:9 / 4:3) is **letterboxed** to square
   rather than squished, so geometry is preserved.
+
+## Temporal / multi-frame reasoning
+
+A single frame answers *"what is in this scene"*; surveillance needs *"what is
+**happening** over time"*. "A person is standing near a door" and "a person
+approached the entrance, stopped, and left a bag unattended" are worlds apart for
+the use case — and only the second is recoverable from a **sequence** of frames.
+
+SENTRY reasons across a short clip (3–5 frames) without any surgery to the frozen
+backbone. BLIP-2 maps one image to a fixed set of language-space query tokens
+(`ViT → Q-Former → projection`); we run that encoder **per frame**, then
+**aggregate the per-frame token sets across the sequence** before handing a single
+visual context to the language model:
+
+```
+frame_1 ─┐
+frame_2 ─┤  ViT + Q-Former + proj   ─►  [T, Q, H]  per-frame tokens (frozen)
+  ...    ┤      (per frame)                  │
+frame_T ─┘                                   ▼
+                                   aggregate across T
+                                   concat | mean | max | attn
+                                             │
+                                             ▼
+                       [1, M, H] visual context  +  prompt  ─►  OPT  ─► report
+```
+
+| strategy | what it does |
+|---|---|
+| **`concat`** *(default)* | keep every frame's tokens **in temporal order** and let the LLM's self-attention reason across them — the mechanism modern video-language models use. **Zero new parameters**, so it works with the base model or any LoRA adapter out of the box. |
+| `mean` / `max` | pool the per-frame tokens into one set — cheaper, order-agnostic. |
+| `attn` | a small **learnable** [`TemporalAttentionPooler`](src/model/temporal.py) weights frames by salience (trainable; falls back to mean when no pooler is loaded). |
+
+Generation, the confidence score, and the **reliability flag** carry over to clips
+unchanged — the temporal path mirrors BLIP-2's own `generate`, building the visual
+tokens itself and concatenating the prompt embeddings. The demo's **Multi-frame
+(temporal)** tab shows the clip report next to the single-frame baseline so the
+difference is visible.
+
+```bash
+# temporal report from a handful of ordered frames (base model or --adapter)
+PYTHONPATH=src python -m model.temporal \
+  --frames f0.jpg f1.jpg f2.jpg f3.jpg --aggregate concat
+```
+
+On the data side, [`data.datasets.ucf_crime`](src/data/datasets/ucf_crime.py)'s
+`--extract-clips` samples a short ordered clip per video that **spans the annotated
+anomaly window** (just before → during → just after), and
+[`ClipReportDataset`](src/data/dataset.py) feeds those `image_paths` to the
+temporal model.
 
 ## Dataset
 
@@ -127,7 +177,7 @@ flagged rather than surfaced as fact. The Grad-CAM overlay is the second check: 
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-PYTHONPATH=src python -m pytest -q                  # 35 tests
+PYTHONPATH=src python -m pytest -q                  # 50 tests
 
 # Build the real-dataset manifest (after placing UCF-Crime under data/raw/ — see data/README.md)
 PYTHONPATH=src python -m data.datasets.ucf_crime \
@@ -136,6 +186,10 @@ PYTHONPATH=src python -m data.datasets.ucf_crime \
   --out-dir   data/processed/ucf_crime
 
 PYTHONPATH=src python -m model.train --config configs/default.yaml   # fine-tune (LoRA)
+
+# Temporal: one report across a short clip of ordered frames
+PYTHONPATH=src python -m model.temporal --frames f0.jpg f1.jpg f2.jpg f3.jpg
+
 PYTHONPATH=src python app/app.py                                     # local demo
 ```
 
@@ -143,23 +197,24 @@ PYTHONPATH=src python app/app.py                                     # local dem
 
 ```
 src/data/         UCF-Crime adapter + manifest writer, dataset/collator, frame extraction + letterbox + leakage-safe split
-src/model/        BLIP-2 + LoRA loader, training loop, inference, prompts, multi-view
+src/model/        BLIP-2 + LoRA loader, training loop, inference, prompts, multi-view, temporal multi-frame
 src/grounding/    Grad-CAM over ViT patches (letterbox-aware) + overlay
 src/eval/         NLG + event-overlap metrics, hallucination analysis, calibration, reliability
 data/cards/       dataset cards: provenance, collection, known biases
 data/samples/     committed example manifest (schema demo, no media)
 app/app.py        Gradio demo (frame -> report + reliability + grounding)
 configs/          model / LoRA / training / eval config + incident prompt
-tests/            35 unit tests (hermetic; no download, no GPU)
+tests/            50 unit tests (hermetic; no download, no GPU)
 deploy/           Hugging Face Space
 ```
 
 ## Status & roadmap
 
 The pipeline, **real-dataset integration** (UCF-Crime dataloader + manifest + data
-cards), evaluation, reliability flagging, grounding, and a deployed demo are in
-place. The live demo runs the prompt-conditioned base model so you can exercise the
-full flow (report → reliability → grounding) today.
+cards), evaluation, reliability flagging, grounding, **temporal multi-frame
+reasoning**, and a deployed demo are in place. The live demo runs the
+prompt-conditioned base model so you can exercise the full flow (single-frame and
+multi-frame report → reliability → grounding) today.
 
 **Next:** fine-tune on UCF-Crime end-to-end and publish per-class metrics · add a
 ShanghaiTech grounding-evaluation adapter · pair with a captioned source for true

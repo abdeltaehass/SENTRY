@@ -20,6 +20,12 @@ from grounding import grounding_cam, overlay_heatmap, split_sentences
 from model.inference import generate_with_confidence
 from model.model import load_base, load_for_inference, pick_device
 from model.prompts import incident_prompt
+from model.temporal import (
+    AGGREGATIONS,
+    generate_temporal_with_confidence,
+    load_frames,
+    temporal_prompt,
+)
 
 CONFIG = "configs/default.yaml"
 ADAPTER = "outputs/incident_lora"        # trained adapter, if present
@@ -47,7 +53,10 @@ def _model():
             model, processor = load_base(cfg, device=device)   # base VLM; fine-tuning pending
         model.to(device).eval()
         _STATE.update(model=model, processor=processor, device=device,
-                      prompt=incident_prompt(cfg), calibrator=load_calibrator())
+                      prompt=incident_prompt(cfg), temporal_prompt=temporal_prompt(cfg),
+                      num_frames=cfg.get("temporal.num_frames", 4),
+                      default_aggregate=cfg.get("temporal.aggregate", "concat"),
+                      calibrator=load_calibrator())
     return _STATE
 
 
@@ -95,6 +104,36 @@ def ground_sentence(image, sentence):
     return overlay_heatmap(image, cam, letterbox_input=True)
 
 
+def _file_paths(files) -> list[str]:
+    """Normalize gr.File (filepath mode) output to a list of path strings."""
+    if not files:
+        return []
+    files = files if isinstance(files, list) else [files]
+    return [f if isinstance(f, str) else getattr(f, "name", str(f)) for f in files]
+
+
+def analyze_clip(files, aggregate):
+    """Temporal path: 3-5 ordered frames -> one report describing events over time."""
+    paths = _file_paths(files)
+    if len(paths) < 2:
+        return ("Upload at least 2 ordered frames (3-5 works best) to read a "
+                "sequence of events.", {}, "", "")
+    s = _model()
+    aggregate = aggregate or s["default_aggregate"]
+    images = load_frames(paths, letterbox_input=True, num_frames=s["num_frames"])
+    report, conf = generate_temporal_with_confidence(
+        s["model"], s["processor"], images, s["device"],
+        max_new_tokens=96, prompt=s["temporal_prompt"], strategy=aggregate, **DECODE,
+    )
+    rel = assess_reliability(conf, s["calibrator"])
+    # Single-frame baseline on the last frame, to make the temporal gain visible.
+    baseline, _ = generate_with_confidence(
+        s["model"], s["processor"], images[-1], s["device"],
+        max_new_tokens=96, prompt=s["prompt"], **DECODE,
+    )
+    return report, {"reliability": rel["reliability_score"]}, _risk_banner(rel), baseline
+
+
 def _examples() -> list[list[str]]:
     candidates = [
         "data/raw/incidents/examples/frame_0001.jpg",
@@ -107,25 +146,60 @@ def build_demo() -> gr.Blocks:
     with gr.Blocks(title="SENTRY — Incident Report Generator", theme=gr.themes.Soft()) as demo:
         gr.Markdown("# 🛰️ SENTRY — Incident Report Generator")
         gr.Markdown(DISCLAIMER)
-        with gr.Row():
-            with gr.Column(scale=1):
-                image_in = gr.Image(type="pil", label="Surveillance frame", height=360)
-                run = gr.Button("Generate incident report", variant="primary")
-                examples = _examples()
-                if examples:
-                    gr.Examples(examples=examples, inputs=image_in, label="Example frames")
-            with gr.Column(scale=1):
-                report_out = gr.Textbox(label="Drafted incident report", lines=6)
-                risk_out = gr.Markdown()
-                conf_out = gr.Label(label="Reliability score (0 = unreliable, 1 = reliable)")
-                overlay_out = gr.Image(label="Grad-CAM grounding", height=360)
-                sentence_dd = gr.Dropdown(
-                    label="Ground a specific sentence", choices=[], interactive=True
-                )
 
-        run.click(analyze, inputs=image_in,
-                  outputs=[report_out, conf_out, risk_out, overlay_out, sentence_dd])
-        sentence_dd.change(ground_sentence, inputs=[image_in, sentence_dd], outputs=overlay_out)
+        with gr.Tabs():
+            with gr.Tab("Single frame"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        image_in = gr.Image(type="pil", label="Surveillance frame", height=360)
+                        run = gr.Button("Generate incident report", variant="primary")
+                        examples = _examples()
+                        if examples:
+                            gr.Examples(examples=examples, inputs=image_in, label="Example frames")
+                    with gr.Column(scale=1):
+                        report_out = gr.Textbox(label="Drafted incident report", lines=6)
+                        risk_out = gr.Markdown()
+                        conf_out = gr.Label(label="Reliability (0 = unreliable, 1 = reliable)")
+                        overlay_out = gr.Image(label="Grad-CAM grounding", height=360)
+                        sentence_dd = gr.Dropdown(
+                            label="Ground a specific sentence", choices=[], interactive=True
+                        )
+
+                run.click(analyze, inputs=image_in,
+                          outputs=[report_out, conf_out, risk_out, overlay_out, sentence_dd])
+                sentence_dd.change(ground_sentence, inputs=[image_in, sentence_dd],
+                                   outputs=overlay_out)
+
+            with gr.Tab("🎞️ Multi-frame (temporal)"):
+                gr.Markdown(
+                    "Upload **3–5 ordered frames** from a short clip. SENTRY encodes "
+                    "each frame, aggregates across the sequence, and reports the "
+                    "**events over time** — not just one scene. The single-frame "
+                    "baseline (last frame only) is shown for contrast."
+                )
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        frames_in = gr.File(
+                            file_count="multiple", type="filepath",
+                            label="Ordered frames (3–5)", file_types=["image"],
+                        )
+                        aggregate_dd = gr.Dropdown(
+                            choices=list(AGGREGATIONS), value="concat",
+                            label="Cross-frame aggregation",
+                        )
+                        run_clip = gr.Button("Generate temporal report", variant="primary")
+                    with gr.Column(scale=1):
+                        clip_report_out = gr.Textbox(label="Temporal incident report", lines=6)
+                        clip_risk_out = gr.Markdown()
+                        clip_conf_out = gr.Label(label="Reliability (0 = unreliable, 1 = reliable)")
+                        baseline_out = gr.Textbox(
+                            label="Single-frame baseline (last frame only)", lines=4
+                        )
+
+                run_clip.click(
+                    analyze_clip, inputs=[frames_in, aggregate_dd],
+                    outputs=[clip_report_out, clip_conf_out, clip_risk_out, baseline_out],
+                )
     return demo
 
 
