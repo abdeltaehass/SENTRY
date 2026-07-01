@@ -27,6 +27,7 @@ from model.temporal import (  # noqa: E402
     load_frames,
     temporal_prompt,
 )
+from schema.incident import IncidentReport, now_timestamp  # noqa: E402
 
 CONFIG = "configs/default.yaml"
 ADAPTER = os.environ.get("SENTRY_ADAPTER", "")   # empty -> base model
@@ -63,16 +64,20 @@ def _banner(rel: dict) -> str:
     return f"### ✅ Low risk (reliability {s:.2f})"
 
 
-def analyze(image):
+def analyze(image, location):
     if image is None:
-        return "Please upload a frame.", {}, ""
+        return "Please upload a frame.", {}, "", {}
     s = _model()
     report, conf = generate_with_confidence(
         s["model"], s["processor"], image.convert("RGB"), "cpu",
         max_new_tokens=80, prompt=s["prompt"], **DECODE,
     )
     rel = assess_reliability(conf)
-    return report, {"reliability": rel["reliability_score"]}, _banner(rel)
+    structured = IncidentReport.from_signals(
+        report, confidence=conf, reliability=rel,
+        timestamp=now_timestamp(), location=(location or None),
+    ).to_dict()
+    return report, {"reliability": rel["reliability_score"]}, _banner(rel), structured
 
 
 def _file_paths(files) -> list[str]:
@@ -82,10 +87,10 @@ def _file_paths(files) -> list[str]:
     return [f if isinstance(f, str) else getattr(f, "name", str(f)) for f in files]
 
 
-def analyze_clip(files, aggregate):
+def analyze_clip(files, aggregate, location):
     paths = _file_paths(files)
     if len(paths) < 2:
-        return "Upload at least 2 ordered frames (3–5 works best).", {}, ""
+        return "Upload at least 2 ordered frames (3–5 works best).", {}, "", {}
     s = _model()
     aggregate = aggregate or s["default_aggregate"]
     images = load_frames(paths, letterbox_input=True, num_frames=s["num_frames"])
@@ -94,7 +99,11 @@ def analyze_clip(files, aggregate):
         max_new_tokens=80, prompt=s["temporal_prompt"], strategy=aggregate, **DECODE,
     )
     rel = assess_reliability(conf)
-    return report, {"reliability": rel["reliability_score"]}, _banner(rel)
+    structured = IncidentReport.from_signals(
+        report, confidence=conf, reliability=rel,
+        timestamp=now_timestamp(), location=(location or None),
+    ).to_dict()
+    return report, {"reliability": rel["reliability_score"]}, _banner(rel), structured
 
 
 with gr.Blocks(title="SENTRY — Incident Report Generator", theme=gr.themes.Soft()) as demo:
@@ -105,12 +114,17 @@ with gr.Blocks(title="SENTRY — Incident Report Generator", theme=gr.themes.Sof
             with gr.Row():
                 with gr.Column():
                     image_in = gr.Image(type="pil", label="Surveillance frame", height=360)
+                    location_in = gr.Textbox(
+                        label="Camera location (optional)", placeholder="e.g. east entrance"
+                    )
                     run = gr.Button("Generate incident report", variant="primary")
                 with gr.Column():
                     report_out = gr.Textbox(label="Drafted incident report", lines=6)
                     risk_out = gr.Markdown()
                     conf_out = gr.Label(label="Reliability (0 = unreliable, 1 = reliable)")
-            run.click(analyze, inputs=image_in, outputs=[report_out, conf_out, risk_out])
+                    json_out = gr.JSON(label="Structured incident report (JSON)")
+            run.click(analyze, inputs=[image_in, location_in],
+                      outputs=[report_out, conf_out, risk_out, json_out])
 
         with gr.Tab("🎞️ Multi-frame (temporal)"):
             gr.Markdown(
@@ -128,13 +142,17 @@ with gr.Blocks(title="SENTRY — Incident Report Generator", theme=gr.themes.Sof
                         choices=list(AGGREGATIONS), value="concat",
                         label="Cross-frame aggregation",
                     )
+                    clip_location_in = gr.Textbox(
+                        label="Camera location (optional)", placeholder="e.g. loading bay"
+                    )
                     run_clip = gr.Button("Generate temporal report", variant="primary")
                 with gr.Column():
                     clip_report_out = gr.Textbox(label="Temporal incident report", lines=6)
                     clip_risk_out = gr.Markdown()
                     clip_conf_out = gr.Label(label="Reliability (0 = unreliable, 1 = reliable)")
-            run_clip.click(analyze_clip, inputs=[frames_in, aggregate_dd],
-                           outputs=[clip_report_out, clip_conf_out, clip_risk_out])
+                    clip_json_out = gr.JSON(label="Structured incident report (JSON)")
+            run_clip.click(analyze_clip, inputs=[frames_in, aggregate_dd, clip_location_in],
+                           outputs=[clip_report_out, clip_conf_out, clip_risk_out, clip_json_out])
 
 if __name__ == "__main__":
     demo.launch()

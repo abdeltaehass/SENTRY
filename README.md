@@ -11,7 +11,7 @@
 <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white">
 <img alt="Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20Transformers%20%C2%B7%20PEFT-FFD21E">
 <img alt="Gradio" src="https://img.shields.io/badge/Gradio-demo-F97316">
-<img alt="Tests" src="https://img.shields.io/badge/tests-50%20passing-2ea44f">
+<img alt="Tests" src="https://img.shields.io/badge/tests-66%20passing-2ea44f">
 <img alt="License" src="https://img.shields.io/badge/License-MIT-blue">
 </p>
 
@@ -30,11 +30,12 @@ scaffolding that makes one trustworthy:
 
 - **Vision-language fine-tuning** — BLIP-2 adapted with **LoRA** (parameter-efficient, ~0.3% of weights trained).
 - **Temporal multi-frame reasoning** — reports the *events over a short clip* (3–5 frames), not just a single scene: each frame is encoded, the per-frame tokens are **aggregated across the sequence** (concat / mean / max / learnable attention), then one report is generated. *(See [Temporal reasoning](#temporal--multi-frame-reasoning).)*
+- **Structured JSON output** — a validated schema layer turns freeform text into a typed incident record (`incident_type`, `confidence`, `hallucination_flag`, `grounding_regions`, …) with a robust parse/validate/repair path — the difference between a demo and something you can pipe into a real system. *(See [Structured output](#structured-output).)*
 - **Real dataset integration** — a working dataloader + **cleaned annotation manifest** for **UCF-Crime** (1,900 real CCTV videos, 13 crime classes), with **data cards** documenting provenance and bias. *(See [Dataset](#dataset).)*
 - **Leakage-safe evaluation** — splits by **camera/clip**, never by frame, with an automated leakage check.
 - **Trustworthy outputs** — **calibration (ECE)** + a **reliability score** that flags low-confidence reports, and **Grad-CAM grounding** as a second check.
 - **Task-aware metrics** — beyond BLEU/ROUGE: an **event-overlap F1** and a **hallucination rate** that measure *facts*, not fluency.
-- **Engineering hygiene** — typed config, a pluggable ingestion pipeline, **50 passing tests**, `ruff`-clean data layer, and a one-click deployed demo.
+- **Engineering hygiene** — typed config, a pluggable ingestion pipeline, **66 passing tests**, `ruff`-clean data layer, and a one-click deployed demo.
 
 ## Problem
 
@@ -171,13 +172,54 @@ The third row is the point: a confident-sounding but **low-reliability** report 
 flagged rather than surfaced as fact. The Grad-CAM overlay is the second check: if
 "armed" doesn't light up a plausible region of the frame, the claim isn't grounded.
 
+## Structured output
+
+Freeform text is a demo; a **validated JSON object** is something a SOC dashboard,
+an alerting rule, or a case-management API can actually consume. On top of the
+generated report, SENTRY emits one typed record:
+
+```json
+{
+  "timestamp": "14:32:07",
+  "location": "east entrance",
+  "incident_type": "unattended object",
+  "confidence": 0.81,
+  "description": "Individual left a backpack near the door and exited frame",
+  "hallucination_flag": false,
+  "grounding_regions": ["lower-left quadrant"]
+}
+```
+
+The fields are **assembled from signals the pipeline already produces**, so the
+schema is grounded rather than re-hallucinated:
+
+| field | source |
+|---|---|
+| `description` | the generated report text |
+| `incident_type` | classified from the description with the **same event lexicon + negation handling** as event-F1 ([`eval.metrics.detect_events`](src/eval/metrics.py)), mapped onto a controlled vocabulary (whole-word matching, so "carrying" no longer trips "car") |
+| `confidence` / `hallucination_flag` | the generation confidence and the reliability flag ([`eval.reliability`](src/eval/reliability.py)) |
+| `grounding_regions` | the Grad-CAM heatmap reduced to named image quadrants |
+| `timestamp` / `location` | carried from frame/camera metadata (or tagged in the demo) |
+
+Two entry points cover both routes to structured output:
+
+- **Post-generation assembly** — [`IncidentReport.from_signals`](src/schema/incident.py) always emits a schema-valid object from the signals above.
+- **Parse + validate + repair** — [`parse_incident`](src/schema/incident.py) ingests JSON a model emits directly (e.g. under constrained/guided decoding): it recovers the object from surrounding prose, coerces types, clamps `confidence` to `[0, 1]`, re-derives an out-of-vocabulary `incident_type` from the description, and normalizes timestamps. `INCIDENT_JSON_SCHEMA` is the JSON Schema for the record — ready to feed a grammar-constrained decoder.
+
+The demo shows the JSON beside every report; the CLI emits it with `--json`:
+
+```bash
+PYTHONPATH=src python -m model.inference --image frame.jpg --adapter outputs/incident_lora \
+  --json --location "east entrance"
+```
+
 ## Run it
 
 ```bash
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-PYTHONPATH=src python -m pytest -q                  # 50 tests
+PYTHONPATH=src python -m pytest -q                  # 66 tests
 
 # Build the real-dataset manifest (after placing UCF-Crime under data/raw/ — see data/README.md)
 PYTHONPATH=src python -m data.datasets.ucf_crime \
@@ -190,6 +232,9 @@ PYTHONPATH=src python -m model.train --config configs/default.yaml   # fine-tune
 # Temporal: one report across a short clip of ordered frames
 PYTHONPATH=src python -m model.temporal --frames f0.jpg f1.jpg f2.jpg f3.jpg
 
+# Structured JSON incident record instead of raw text
+PYTHONPATH=src python -m model.inference --image frame.jpg --adapter outputs/incident_lora --json
+
 PYTHONPATH=src python app/app.py                                     # local demo
 ```
 
@@ -199,12 +244,13 @@ PYTHONPATH=src python app/app.py                                     # local dem
 src/data/         UCF-Crime adapter + manifest writer, dataset/collator, frame extraction + letterbox + leakage-safe split
 src/model/        BLIP-2 + LoRA loader, training loop, inference, prompts, multi-view, temporal multi-frame
 src/grounding/    Grad-CAM over ViT patches (letterbox-aware) + overlay
+src/schema/       structured incident-report schema: classify, assemble, validate, parse/repair JSON
 src/eval/         NLG + event-overlap metrics, hallucination analysis, calibration, reliability
 data/cards/       dataset cards: provenance, collection, known biases
 data/samples/     committed example manifest (schema demo, no media)
 app/app.py        Gradio demo (frame -> report + reliability + grounding)
 configs/          model / LoRA / training / eval config + incident prompt
-tests/            50 unit tests (hermetic; no download, no GPU)
+tests/            66 unit tests (hermetic; no download, no GPU)
 deploy/           Hugging Face Space
 ```
 
@@ -212,9 +258,10 @@ deploy/           Hugging Face Space
 
 The pipeline, **real-dataset integration** (UCF-Crime dataloader + manifest + data
 cards), evaluation, reliability flagging, grounding, **temporal multi-frame
-reasoning**, and a deployed demo are in place. The live demo runs the
-prompt-conditioned base model so you can exercise the full flow (single-frame and
-multi-frame report → reliability → grounding) today.
+reasoning**, **structured JSON output**, and a deployed demo are in place. The live
+demo runs the prompt-conditioned base model so you can exercise the full flow
+(single-frame and multi-frame report → reliability → grounding → structured
+record) today.
 
 **Next:** fine-tune on UCF-Crime end-to-end and publish per-class metrics · add a
 ShanghaiTech grounding-evaluation adapter · pair with a captioned source for true

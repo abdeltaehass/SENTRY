@@ -8,6 +8,8 @@ boilerplate regardless of facts.
 
 from __future__ import annotations
 
+import re
+
 
 def compute_text_metrics(predictions: list[str], references: list[str]) -> dict[str, float]:
     """Compute BLEU, ROUGE-L and METEOR for report generation."""
@@ -66,19 +68,34 @@ _NEG_CUES = ("no ", "without", "negative for", "free of", "no sign", "no evidenc
              "absence of", "not ", "nothing", "all clear")
 
 
-def _mentioned_events(text: str) -> set[str]:
+def _kw_index(keyword: str, text: str, word_boundary: bool) -> int:
+    """First index of ``keyword`` in ``text`` (-1 if absent).
+
+    ``word_boundary`` matches whole words only (allowing a plural ``s``), so
+    "car" fires on "cars" but not "carrying" and "van" no longer fires on
+    "vandalism" — stricter typing for the structured layer, while event-F1 keeps
+    the lenient substring default it was tuned with.
+    """
+    if word_boundary:
+        m = re.search(r"\b" + re.escape(keyword) + r"s?\b", text)
+        return m.start() if m else -1
+    return text.find(keyword)
+
+
+def _mentioned_events(text: str, word_boundary: bool = False) -> set[str]:
     """Events whose terms appear at all (regardless of polarity)."""
     t = text.lower()
-    return {e for e, kws in EVENT_CATEGORIES.items() if any(k in t for k in kws)}
+    return {e for e, kws in EVENT_CATEGORIES.items()
+            if any(_kw_index(k, t, word_boundary) != -1 for k in kws)}
 
 
-def _asserted_events(text: str) -> set[str]:
+def _asserted_events(text: str, word_boundary: bool = False) -> set[str]:
     """Events asserted as present (term appears and is not locally negated)."""
     t = text.lower()
     out: set[str] = set()
     for event, kws in EVENT_CATEGORIES.items():
         for k in kws:
-            idx = t.find(k)
+            idx = _kw_index(k, t, word_boundary)
             if idx == -1:
                 continue
             window = t[max(0, idx - 30):idx]
@@ -86,6 +103,20 @@ def _asserted_events(text: str) -> set[str]:
                 out.add(event)
             break
     return out
+
+
+def detect_events(text: str, *, asserted_only: bool = True,
+                  word_boundary: bool = False) -> set[str]:
+    """Incident events present in ``text``.
+
+    ``asserted_only`` (default) keeps only events stated as present — "no weapon
+    seen" does not count as a weapon event. Set it False to get every mentioned
+    event regardless of polarity. ``word_boundary`` matches whole words only.
+    Public entry point for the structured-output layer (``schema.incident``) so
+    incident typing reuses the same lexicon and negation handling as event-F1.
+    """
+    fn = _asserted_events if asserted_only else _mentioned_events
+    return fn(text, word_boundary)
 
 
 def _micro_prf(pred_sets, ref_sets) -> tuple[float, float, float]:
@@ -131,7 +162,6 @@ def score(predictions: list[str], references: list[str]) -> dict[str, float]:
 # it is NOT comparable to those; use this for head-to-head benchmarks.
 
 def _tokenize(text: str) -> list[str]:
-    import re
     return re.findall(r"\w+", text.lower())
 
 

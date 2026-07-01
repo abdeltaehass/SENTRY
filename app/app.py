@@ -26,6 +26,7 @@ from model.temporal import (
     load_frames,
     temporal_prompt,
 )
+from schema.incident import IncidentReport, now_timestamp
 
 CONFIG = "configs/default.yaml"
 ADAPTER = "outputs/incident_lora"        # trained adapter, if present
@@ -70,9 +71,9 @@ def _risk_banner(rel: dict) -> str:
     return f"### ✅ Low hallucination risk &nbsp; (reliability {s:.2f})"
 
 
-def analyze(image):
+def analyze(image, location):
     if image is None:
-        return "Please upload a frame.", {}, "", None, gr.update(choices=[], value=None)
+        return "Please upload a frame.", {}, "", None, gr.update(choices=[], value=None), {}
     s = _model()
     image = image.convert("RGB")
     report, conf = generate_with_confidence(
@@ -80,11 +81,13 @@ def analyze(image):
         max_new_tokens=96, prompt=s["prompt"], **DECODE,
     )
     rel = assess_reliability(conf, s["calibrator"])
-    overlay = overlay_heatmap(
-        image,
-        grounding_cam(s["model"], s["processor"], image, report, s["device"], letterbox_input=True),
-        letterbox_input=True,
-    )
+    cam = grounding_cam(s["model"], s["processor"], image, report, s["device"],
+                        letterbox_input=True)
+    overlay = overlay_heatmap(image, cam, letterbox_input=True)
+    structured = IncidentReport.from_signals(
+        report, confidence=conf, reliability=rel, cam=cam,
+        timestamp=now_timestamp(), location=(location or None),
+    ).to_dict()
     sentences = split_sentences(report)
     return (
         report,
@@ -92,6 +95,7 @@ def analyze(image):
         _risk_banner(rel),
         overlay,
         gr.update(choices=sentences, value=sentences[0] if sentences else None),
+        structured,
     )
 
 
@@ -112,12 +116,12 @@ def _file_paths(files) -> list[str]:
     return [f if isinstance(f, str) else getattr(f, "name", str(f)) for f in files]
 
 
-def analyze_clip(files, aggregate):
+def analyze_clip(files, aggregate, location):
     """Temporal path: 3-5 ordered frames -> one report describing events over time."""
     paths = _file_paths(files)
     if len(paths) < 2:
         return ("Upload at least 2 ordered frames (3-5 works best) to read a "
-                "sequence of events.", {}, "", "")
+                "sequence of events.", {}, "", "", {})
     s = _model()
     aggregate = aggregate or s["default_aggregate"]
     images = load_frames(paths, letterbox_input=True, num_frames=s["num_frames"])
@@ -126,12 +130,17 @@ def analyze_clip(files, aggregate):
         max_new_tokens=96, prompt=s["temporal_prompt"], strategy=aggregate, **DECODE,
     )
     rel = assess_reliability(conf, s["calibrator"])
+    structured = IncidentReport.from_signals(
+        report, confidence=conf, reliability=rel,
+        timestamp=now_timestamp(), location=(location or None),
+    ).to_dict()
     # Single-frame baseline on the last frame, to make the temporal gain visible.
     baseline, _ = generate_with_confidence(
         s["model"], s["processor"], images[-1], s["device"],
         max_new_tokens=96, prompt=s["prompt"], **DECODE,
     )
-    return report, {"reliability": rel["reliability_score"]}, _risk_banner(rel), baseline
+    return (report, {"reliability": rel["reliability_score"]}, _risk_banner(rel),
+            baseline, structured)
 
 
 def _examples() -> list[list[str]]:
@@ -152,6 +161,9 @@ def build_demo() -> gr.Blocks:
                 with gr.Row():
                     with gr.Column(scale=1):
                         image_in = gr.Image(type="pil", label="Surveillance frame", height=360)
+                        location_in = gr.Textbox(
+                            label="Camera location (optional)", placeholder="e.g. east entrance"
+                        )
                         run = gr.Button("Generate incident report", variant="primary")
                         examples = _examples()
                         if examples:
@@ -164,9 +176,11 @@ def build_demo() -> gr.Blocks:
                         sentence_dd = gr.Dropdown(
                             label="Ground a specific sentence", choices=[], interactive=True
                         )
+                        json_out = gr.JSON(label="Structured incident report (JSON)")
 
-                run.click(analyze, inputs=image_in,
-                          outputs=[report_out, conf_out, risk_out, overlay_out, sentence_dd])
+                run.click(analyze, inputs=[image_in, location_in],
+                          outputs=[report_out, conf_out, risk_out, overlay_out, sentence_dd,
+                                   json_out])
                 sentence_dd.change(ground_sentence, inputs=[image_in, sentence_dd],
                                    outputs=overlay_out)
 
@@ -187,6 +201,9 @@ def build_demo() -> gr.Blocks:
                             choices=list(AGGREGATIONS), value="concat",
                             label="Cross-frame aggregation",
                         )
+                        clip_location_in = gr.Textbox(
+                            label="Camera location (optional)", placeholder="e.g. loading bay"
+                        )
                         run_clip = gr.Button("Generate temporal report", variant="primary")
                     with gr.Column(scale=1):
                         clip_report_out = gr.Textbox(label="Temporal incident report", lines=6)
@@ -195,10 +212,12 @@ def build_demo() -> gr.Blocks:
                         baseline_out = gr.Textbox(
                             label="Single-frame baseline (last frame only)", lines=4
                         )
+                        clip_json_out = gr.JSON(label="Structured incident report (JSON)")
 
                 run_clip.click(
-                    analyze_clip, inputs=[frames_in, aggregate_dd],
-                    outputs=[clip_report_out, clip_conf_out, clip_risk_out, baseline_out],
+                    analyze_clip, inputs=[frames_in, aggregate_dd, clip_location_in],
+                    outputs=[clip_report_out, clip_conf_out, clip_risk_out, baseline_out,
+                             clip_json_out],
                 )
     return demo
 
